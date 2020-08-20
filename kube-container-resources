@@ -1,0 +1,110 @@
+#!/usr/bin/env bash
+
+set -e
+
+# Format resource definitions (e.g. 1, 1Gi, 1000, 128M) into a number
+#
+# Arguments:
+#  $1: The resource definition
+#  $2: The based used for expansion. 1 core is 1000 mcores but 1 Gi Mem is 1024 Mi Mem.
+format_resources() {
+  if [[ -z "$1" ]] ; then
+    echo "0"
+  elif [[ $1 =~ 'Gi' ]] ; then
+    expr ${1::-2} \* $2
+  elif [[ $1 =~ 'Mi' ]] ; then
+    echo "${1::-2}"
+  elif [[ $1 =~ 'm' ]] ; then
+    echo "${1::-1}"
+  else 
+    expr $1 \* $2
+  fi
+}
+
+output() {
+  [ "$OUTPUT" = "pretty" ] && echo "$1" >> $OUTFILE || echo "$1"
+}
+
+if [ $# -lt 1 ] ; then
+  echo "Usage: $0 <NAMESPACE|-A> [-csv]"
+  echo 
+  echo "Lists the resource definitions for all containers in one or all namespaces."
+  echo 
+  echo "Parameters:"
+  echo "  NAMESPACE      The namespace scope for this request."
+  echo "  -A             List resources across all namespaces."
+  echo "  -csv           Produce CSV output"
+  exit 0
+fi
+
+if [ ! kubectl ] ; then
+  echo "Executable `kubectl` not found on PATH."
+  exit 1
+fi
+
+if [ "$1" = "-A" ] ; then
+  NAMESPACES=$(kubectl get namespace -o go-template --template='{{range .items}}{{.metadata.name}} {{end}}')
+else 
+  NAMESPACES=$1
+fi
+
+OUTPUT=pretty
+
+if [ "$2" = "-csv" ] ; then
+  OUTPUT=csv
+else 
+  OUTFILE=$(mktemp)
+fi
+
+output "NAMESPACE;POD;CONTAINER;TYPE;MEM_REQUESTS;MEM_LIMITS;CPU_REQUESTS;CPU_LIMITS;STATUS"
+
+STATUS=true
+
+declare -A STATS
+
+for NAMESPACE in $NAMESPACES ; do
+
+  [ "$OUTPUT" = "pretty" ] && >&2 echo -n "Processing namespace $NAMESPACE: "
+  PODS=$(kubectl -n $NAMESPACE get pod -o go-template --template='{{range .items}}{{.metadata.name}} {{end}}')
+
+  for POD in $PODS ; do
+
+    [ "$OUTPUT" = "pretty" ] && >&2 echo -n "."
+
+    POD_RESOURCES=$(kubectl get pod $POD -n $NAMESPACE -o jsonpath='{range .spec.containers[*]}{.name}{";APP;"}{.resources.requests.memory}{";"}{.resources.limits.memory}{";"}{.resources.requests.cpu}{";"}{.resources.limits.cpu}{"\n"}{end}{range .spec.initContainers[*]}{.name}{";INIT;"}{.resources.requests.memory}{";"}{.resources.limits.memory}{";"}{.resources.requests.cpu}{";"}{.resources.limits.cpu}{"\n"}{end}')
+
+    for LINE in $POD_RESOURCES ; do 
+      IFS=';' read -ra CONTAINER_DETAILS <<< "$LINE"
+
+      CONTAINER_NAME=${CONTAINER_DETAILS[0]}
+      CONTAINER_STATS=(
+        ${NAMESPACE}                                         # namespace name
+        ${POD}                                               # pod name
+        ${CONTAINER_NAME}                                    # container name
+        ${CONTAINER_DETAILS[1]}                              # container type: APP or INIT
+        $(format_resources "${CONTAINER_DETAILS[2]}" 1024)   # memory requests
+        $(format_resources "${CONTAINER_DETAILS[3]}" 1024)   # memory limits
+        $(format_resources "${CONTAINER_DETAILS[4]}" 1000)   # cpu requests
+        $(format_resources "${CONTAINER_DETAILS[5]}" 1000)   # cpu limits
+      )
+      STATS[$CONTAINER_NAME]=${CONTAINER_STATS[@]}
+    done
+    
+    if $STATUS ; then
+      POD_STATUSES=$(kubectl get pod $POD -n $NAMESPACE -o go-template --template='{{range .status.containerStatuses}}{{.name}};{{if .state.terminated}}Terminated{{end}}{{if .state.running}}Running{{end}}{{"\n"}}{{end}}{{range .status.initContainerStatuses}}{{.name}};{{if .state.terminated}}Terminated{{end}}{{if .state.running}}Running{{end}}{{"\n"}}{{end}}')
+      for LINE in $POD_STATUSES ; do
+        IFS=';' read -ra CONTAINER_STATUS <<< "$LINE"
+        STATS[${CONTAINER_STATUS[0]}]+=" ${CONTAINER_STATUS[1]}"
+      done
+    fi
+  done
+
+  [ "$OUTPUT" = "pretty" ] && >&2 echo " done!"
+done
+
+for KEY in "${!STATS[@]}"; do
+  TEXT=$(echo "${STATS[$KEY]}" | sed -e 's/ /;/g')
+  output "$TEXT" 
+done
+
+[ "$OUTPUT" = "pretty" ] && column -s ';' -t $OUTFILE && rm $OUTFILE
