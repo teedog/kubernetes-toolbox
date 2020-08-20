@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+
+# Original Version from https://alexei-led.github.io/post/k8s_node_shell/
+# Adapted by Tilman Lacko <tilman.lacko@gmx.de>
+
+NODE=${1}
+
+if [ -z "${NODE}" ] ; then
+   echo -e "Usage: $0 \e[1m<NODENAME>\e[0m"
+   echo
+   echo -e "Open a root shell on a kubernetes node by spinning up a special nodeshell pod in namespace \e[4mkube-system\e[0m."
+   echo -e "This does not make use of SSH but utilizes \e[4mkubectl run\e[0m with a \e[4mnsenter\e[0m to elevate to the system level."
+   echo
+   echo "Parameters:"
+   echo -e "  \e[1mNODENAME\e[0m       The node where a shell should be opened."
+   exit 1
+fi
+
+
+NODE_NAME=$(kubectl get node ${NODE} -o template --template='{{index .metadata.labels "kubernetes.io/hostname"}}' 2> /dev/null) 
+
+if [ -z "${NODE_NAME}" ] ; then
+  echo "Node \"$NODE\" does not exist, choose one of:"
+  echo 
+  kubectl get node
+  exit 1
+fi
+
+POD_NAME=nodeshell-${NODE}-${RANDOM}
+IMAGE="docker.io/alpine:3.9"
+
+echo -e "Running nodeshell pod \e[1m${POD_NAME}\e[0m on kubernetes node \e[1m${NODE_NAME}\e[0m."
+
+kubectl run ${POD_NAME:?} --restart=Never -it --rm --image $IMAGE --overrides '{
+  "spec": {
+    "hostPID": true,
+    "hostNetwork": true,
+    "nodeSelector": { "kubernetes.io/hostname": "'${NODE_NAME:?}'" },
+    "tolerations": [{
+        "operator": "Exists"
+    }],
+    "containers": [
+      {
+        "name": "nsenter",
+        "image": '\"${IMAGE?}\"',
+        "command": [
+          "nsenter", "-t", "1", "-m", "-u", "-i", "-n", "--", "su", "-"
+        ],
+        "stdin": true,
+        "tty": true,
+        "securityContext": {
+          "privileged": true
+        }
+      }
+    ]
+  }
+}' --attach "$@"
