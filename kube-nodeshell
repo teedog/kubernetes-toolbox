@@ -9,7 +9,7 @@ if [ -z "${NODE}" ] ; then
    echo -e "Usage: $0 \e[1m<NODENAME>\e[0m"
    echo
    echo -e "Open a root shell on a kubernetes node by spinning up a special nodeshell pod in namespace \e[4mkube-system\e[0m."
-   echo -e "This does not make use of SSH but utilizes \e[4mkubectl run\e[0m with a \e[4mnsenter\e[0m to elevate to the system level."
+   echo -e "This does not make use of SSH but utilizes \e[4mkubectl run\e[0m with \e[4mnsenter\e[0m to elevate to the system level."
    echo
    echo "Parameters:"
    echo -e "  \e[1mNODENAME\e[0m       The node where a shell should be opened."
